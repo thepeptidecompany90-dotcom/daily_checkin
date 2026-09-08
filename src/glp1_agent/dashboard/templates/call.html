@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Call {{ context.patient.first_name }} — GLP-1 Dashboard</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/call.css">
+</head>
+<body>
+  <script>
+    window.__BOT_BASE_URL__ = {{ bot_base_url | tojson }};
+    window.__PATIENT_NAME__ = {{ context.patient.first_name | tojson }};
+  </script>
+
+  <div class="call-layout">
+    <section class="call-left">
+      <p class="back-link"><a href="/patients/{{ context.patient.id }}">&larr; {{ context.patient.first_name }} {{ context.patient.last_name }}</a></p>
+
+      <div class="orb-wrap">
+        <div class="orb" id="orb"></div>
+        <button id="call-btn" class="call-btn" title="Connect" aria-label="Connect">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="white"><path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.2c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1L6.6 10.8z"/></svg>
+        </button>
+      </div>
+
+      <div class="control-bar">
+        <button id="settings-btn" class="control-icon" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        </button>
+        <button id="mute-btn" class="control-pill" title="Mute" aria-label="Mute" disabled>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-2.1A7 7 0 0 0 19 12h-2z"/></svg>
+          <span id="mute-label">Mute</span>
+        </button>
+      </div>
+
+      <p id="status-line" class="status-line muted">Not connected</p>
+    </section>
+
+    <section class="call-right">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-icon">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.9-.9L3 21l1.9-5.6A8.4 8.4 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5z"/></svg>
+        </div>
+        <p>Call to start a new conversation</p>
+      </div>
+      <div id="transcript" class="transcript" hidden></div>
+
+      <form id="message-form" class="message-form" title="Voice only for now — typed messages aren't sent to the agent yet.">
+        <input id="message-input" type="text" placeholder="Typed messages aren't supported yet" autocomplete="off" disabled>
+        <button type="submit" class="send-btn" aria-label="Send" disabled>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="white"><path d="M4 12l16-8-6 8 6 8-16-8z"/></svg>
+        </button>
+      </form>
+    </section>
+  </div>
+
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <div id="settings-drawer" class="drawer" hidden>
+    <div class="drawer-header">
+      <div class="drawer-tabs">
+        <button class="drawer-tab active" data-tab="history">History</button>
+        <button class="drawer-tab" data-tab="trace">Trace</button>
+      </div>
+      <button id="drawer-close" class="drawer-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="tab-history" class="drawer-panel">
+      <p class="muted small">Conversation history for this session.</p>
+      <div id="history-list" class="log-list"></div>
+    </div>
+    <div id="tab-trace" class="drawer-panel" hidden>
+      <p class="muted small">Live function calls and extracted data.</p>
+      <div id="trace-list" class="log-list"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/call.js"></script>
+</body>
+</html>

@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block title %}{{ context.patient.first_name }} {{ context.patient.last_name }} — GLP-1 Dashboard{% endblock %}
+{% block content %}
+<p><a href="/">&larr; All patients</a></p>
+<h1>{{ context.patient.first_name }} {{ context.patient.last_name }}</h1>
+<p><a href="/patients/{{ context.patient.id }}/call">Start a call &rarr;</a></p>
+
+{% if error %}
+<div class="card error">
+  {% if error == "illegal_transition" %}
+    That journey transition isn't allowed from the current state.
+  {% elif error == "no_active_medication" %}
+    This patient has no active medication to update.
+  {% else %}
+    {{ error }}
+  {% endif %}
+</div>
+{% endif %}
+
+<h2>Present state</h2>
+<div class="card">
+  <dl>
+    <dt>Journey state</dt><dd><span class="badge">{{ context.journey.state.value }}</span></dd>
+    <dt>State started</dt><dd>{{ context.journey.state_started_at }}</dd>
+    {% if context.active_medication %}
+    <dt>Active medication</dt>
+    <dd>{{ context.active_medication.name }} — {{ context.active_medication.dose }}{{ context.active_medication.dose_unit }}, {{ context.active_medication.frequency }}</dd>
+    <dt>Next dose</dt><dd>{{ context.active_medication.next_dose_at or "—" }}</dd>
+    {% else %}
+    <dt>Active medication</dt><dd class="muted">None</dd>
+    {% endif %}
+  </dl>
+</div>
+
+<h2>Context playground</h2>
+<p class="muted small">
+  Edits here write to the real database through the same domain services the live
+  agent uses — start a call afterward to see how the conversation changes.
+</p>
+<div class="playground-grid">
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/journey">
+    <h3>Journey state</h3>
+    <label>Move to
+      <select name="target_state" required>
+        {% for state in legal_next_states %}
+        <option value="{{ state.value }}">{{ state.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Reason <input type="text" name="reason" placeholder="optional"></label>
+    {% if not legal_next_states %}<p class="muted small">No legal transitions from {{ context.journey.state.value }}.</p>{% endif %}
+    <button type="submit" {% if not legal_next_states %}disabled{% endif %}>Apply</button>
+  </form>
+
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/medication">
+    <h3>Active medication</h3>
+    {% if context.active_medication %}
+    <label>Dose <input type="number" step="0.1" name="dose" value="{{ context.active_medication.dose }}" required></label>
+    <label>Dose unit <input type="text" name="dose_unit" value="{{ context.active_medication.dose_unit }}" required></label>
+    <label>Frequency <input type="text" name="frequency" value="{{ context.active_medication.frequency }}" required></label>
+    <label>Next dose at <input type="datetime-local" name="next_dose_at"></label>
+    <button type="submit">Apply</button>
+    {% else %}
+    <p class="muted small">No active medication to edit.</p>
+    {% endif %}
+  </form>
+
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/clinician-instruction">
+    <h3>Clinician tracking instruction</h3>
+    <label>Metric <input type="text" name="metric" placeholder="hydration" required></label>
+    <label>Frequency <input type="text" name="frequency" placeholder="daily" required></label>
+    <label>Instruction <input type="text" name="instruction" placeholder="Track daily fluid intake" required></label>
+    <label>Start date <input type="date" name="start_date" required></label>
+    <label>End date <input type="date" name="end_date"></label>
+    <button type="submit">Add</button>
+  </form>
+
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/health-event">
+    <h3>Inject a recent health event</h3>
+    <label>Kind
+      <select name="kind" required>
+        <option value="symptom">Symptom</option>
+        <option value="medication">Medication event</option>
+      </select>
+    </label>
+    <label>Occurred on <input type="date" name="occurred_at" required></label>
+    <label>Symptom type <input type="text" name="symptom_type" placeholder="nausea"></label>
+    <label>Severity <input type="text" name="severity" placeholder="mild"></label>
+    <label>Symptom trend
+      <select name="trend">
+        {% for trend in symptom_trends %}
+        <option value="{{ trend.value }}">{{ trend.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Medication event type
+      <select name="medication_event_type">
+        {% for met in medication_event_types %}
+        <option value="{{ met.value }}">{{ met.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Reason <input type="text" name="reason" placeholder="optional"></label>
+    <button type="submit">Record</button>
+  </form>
+
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/missed-checkins">
+    <h3>Seed missed check-ins</h3>
+    <label>Count <input type="number" min="1" max="14" name="count" value="2" required></label>
+    <button type="submit">Add</button>
+  </form>
+</div>
+
+<h2>Last completed check-in</h2>
+{% if checkin %}
+<div class="card">
+  <dl>
+    <dt>Scheduled</dt><dd>{{ checkin.scheduled_at }}</dd>
+    <dt>Completed</dt><dd>{{ checkin.completed_at }}</dd>
+    <dt>Duration</dt><dd>{{ checkin.duration_seconds }}s</dd>
+  </dl>
+</div>
+
+<h2>Extracted during this call</h2>
+{% if extraction_items %}
+<table>
+  <thead>
+    <tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr>
+  </thead>
+  <tbody>
+    {% for item in extraction_items %}
+    <tr>
+      <td>{{ item.event_type.value }}</td>
+      <td>
+        {% if item.event_type.value == "symptom" %}
+          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
+          {% if item.trend %} — trend: {{ item.trend }}{% endif %}
+          {% if item.notes %}<br><span class="muted">{{ item.notes }}</span>{% endif %}
+        {% elif item.event_type.value == "medication" %}
+          {{ item.medication_event_type }}
+          {% if item.reason %} — {{ item.reason }}{% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ item.occurred_at }}</td>
+      <td>{{ item.observed_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Nothing was extracted during this call.</p>
+{% endif %}
+{% else %}
+<p class="muted">No completed check-in yet.</p>
+{% endif %}
+
+<h2>All patient data</h2>
+
+<h3>Patient</h3>
+<div class="card">
+  <dl>
+    <dt>Name</dt><dd>{{ full_record.patient.first_name }} {{ full_record.patient.last_name }}</dd>
+    <dt>Date of birth</dt><dd>{{ full_record.patient.date_of_birth }}</dd>
+    <dt>Phone</dt><dd>{{ full_record.patient.phone }}</dd>
+    <dt>Timezone</dt><dd>{{ full_record.patient.timezone }}</dd>
+    <dt>Preferred language</dt><dd>{{ full_record.patient.preferred_language }}</dd>
+  </dl>
+</div>
+
+<h3>Journey history</h3>
+{% if full_record.journey_history %}
+<table>
+  <thead><tr><th>State</th><th>Started</th><th>Ended</th><th>Reason</th></tr></thead>
+  <tbody>
+    {% for h in full_record.journey_history %}
+    <tr>
+      <td>{{ h.state.value }}</td>
+      <td>{{ h.started_at }}</td>
+      <td>{{ h.ended_at or "—" }}</td>
+      <td>{{ h.transition_reason or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No journey history.</p>{% endif %}
+
+<h3>Medication history</h3>
+{% if full_record.medication_history %}
+<table>
+  <thead><tr><th>Name</th><th>Dose</th><th>Frequency</th><th>Next dose</th><th>Status</th><th>Started</th><th>Ended</th></tr></thead>
+  <tbody>
+    {% for m in full_record.medication_history %}
+    <tr>
+      <td>{{ m.name }}</td>
+      <td>{{ m.dose }}{{ m.dose_unit }}</td>
+      <td>{{ m.frequency }}</td>
+      <td>{{ m.next_dose_at or "—" }}</td>
+      <td><span class="badge">{{ m.status }}</span></td>
+      <td>{{ m.started_at }}</td>
+      <td>{{ m.ended_at or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No medication history.</p>{% endif %}
+
+<h3>All check-ins</h3>
+{% if full_record.checkins %}
+<table>
+  <thead><tr><th>Scheduled</th><th>Status</th><th>Completed</th><th>Duration</th></tr></thead>
+  <tbody>
+    {% for c in full_record.checkins %}
+    <tr>
+      <td>{{ c.scheduled_at }}</td>
+      <td><span class="badge">{{ c.status.value }}</span></td>
+      <td>{{ c.completed_at or "—" }}</td>
+      <td>{{ c.duration_seconds or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No check-ins.</p>{% endif %}
+
+<h3>All health events</h3>
+{% if full_record.health_events %}
+<table>
+  <thead><tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr></thead>
+  <tbody>
+    {% for item in full_record.health_events %}
+    <tr>
+      <td>{{ item.event_type.value }}</td>
+      <td>
+        {% if item.event_type.value == "symptom" %}
+          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
+          {% if item.trend %} — trend: {{ item.trend }}{% endif %}
+        {% elif item.event_type.value == "medication" %}
+          {{ item.medication_event_type }}{% if item.reason %} — {{ item.reason }}{% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ item.occurred_at }}</td>
+      <td>{{ item.observed_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No health events.</p>{% endif %}
+
+<h3>Clinician instructions</h3>
+{% if full_record.clinician_instructions %}
+<table>
+  <thead><tr><th>Metric</th><th>Frequency</th><th>Instruction</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for i in full_record.clinician_instructions %}
+    <tr>
+      <td>{{ i.metric }}</td>
+      <td>{{ i.frequency }}</td>
+      <td>{{ i.instruction }}</td>
+      <td>{{ i.start_date }}</td>
+      <td>{{ i.end_date or "—" }}</td>
+      <td><span class="badge">{{ i.status }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No clinician instructions.</p>{% endif %}
+
+<h3>Escalation protocols <span class="muted small">(global reference, not patient-specific)</span></h3>
+{% if full_record.escalation_protocols %}
+<table>
+  <thead><tr><th>Event type</th><th>Severity</th><th>Action</th><th>Urgency</th></tr></thead>
+  <tbody>
+    {% for p in full_record.escalation_protocols %}
+    <tr>
+      <td>{{ p.event_type }}</td>
+      <td>{{ p.severity or "any" }}</td>
+      <td>{{ p.action }}</td>
+      <td>{{ p.urgency }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}<p class="muted">No escalation protocols configured.</p>{% endif %}
+
+{% endblock %}
