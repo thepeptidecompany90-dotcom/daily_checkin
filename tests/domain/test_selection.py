@@ -11,6 +11,7 @@ from glp1_agent.domain.models import (
     Patient,
     PatientContext,
 )
+from glp1_agent.domain.observation_service import build_tracking_items
 from glp1_agent.flows.selection import (
     CLINICIAN_TRACKING,
     INITIAL_WEEK,
@@ -60,7 +61,7 @@ def _context(
         active_medication=medication,
         recent_checkins=[],
         recent_health_events=[],
-        active_clinician_instructions=clinician_instructions or [],
+        tracking_items=build_tracking_items(clinician_instructions or [], due_metric=None),
     )
 
 

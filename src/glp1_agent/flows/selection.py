@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from glp1_agent.domain.models import JourneyState, PatientContext
+from glp1_agent.domain.models import JourneyState, PatientContext, TrackingItemKind
 
 STABLE_CHECKIN = "stable_checkin"
 INITIAL_WEEK = "initial_week"
@@ -32,7 +32,7 @@ def select_conversation_mode(context: PatientContext, now: datetime | None = Non
     if _is_medication_day(context, now):
         return MEDICATION_DAY
 
-    if context.active_clinician_instructions:
+    if any(item.kind == TrackingItemKind.CLINICIAN_INSTRUCTION for item in context.tracking_items):
         return CLINICIAN_TRACKING
 
     return STABLE_CHECKIN

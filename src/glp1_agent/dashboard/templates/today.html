@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Today's metrics — GLP-1 Dashboard{% endblock %}
+{% block content %}
+<h1>{% if is_today %}Today's metrics{% else %}Metrics for {{ selected_date }}{% endif %}</h1>
+<p class="muted small">Wellness metrics (mood/weight/sleep/hydration/protein) captured across all patients on the selected day.</p>
+
+<form method="get" class="filter-bar">
+  <label>Date <input type="date" name="for_date" value="{{ selected_date }}" onchange="this.form.submit()"></label>
+</form>
+<nav class="toc">
+  <a href="/today?for_date={{ prev_date }}">&larr; Previous day</a>
+  {% if not is_today %}<a href="/today">Today</a>{% endif %}
+  <a href="/today?for_date={{ next_date }}">Next day &rarr;</a>
+</nav>
+
+{% if observations %}
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Patient</th><th>Metric</th><th>Value</th><th>Captured at</th></tr>
+  </thead>
+  <tbody>
+    {% for o in observations %}
+    <tr>
+      <td><a href="/patients/{{ o.patient_id }}">{{ o.patient_name }}</a></td>
+      <td><span class="badge badge-neutral">{{ o.observation_type.value | humanize }}</span></td>
+      <td>
+        {% if o.value_numeric is not none %}
+          {{ o.value_numeric }}{{ o.unit }}
+        {% else %}
+          {{ o.value_label.value | humanize }}
+        {% endif %}
+      </td>
+      <td>{{ o.created_at | local_dt }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No metrics captured yet today.</p>
+{% endif %}
+{% endblock %}

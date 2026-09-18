@@ -1,38 +1,383 @@
 {% extends "base.html" %}
 {% block title %}{{ context.patient.first_name }} {{ context.patient.last_name }} — GLP-1 Dashboard{% endblock %}
+{% block body_class %}wide{% endblock %}
 {% block content %}
 <p><a href="/">&larr; All patients</a></p>
 <h1>{{ context.patient.first_name }} {{ context.patient.last_name }}</h1>
 <p><a href="/patients/{{ context.patient.id }}/call">Start a call &rarr;</a></p>
 
+<nav class="toc">
+  <a href="#present-state" data-tab="record">Present state</a>
+  <a href="#metric-trends" data-tab="record">Metric trends</a>
+  <a href="#tracking-items" data-tab="record">Tracking items</a>
+  <a href="#" data-tab="playground" class="tab-link">Context playground</a>
+  <a href="#last-checkin" data-tab="record">Last check-in</a>
+  <a href="#all-data" data-tab="record">All patient data</a>
+</nav>
+
 {% if error %}
-<div class="card error">
-  {% if error == "illegal_transition" %}
-    That journey transition isn't allowed from the current state.
-  {% elif error == "no_active_medication" %}
-    This patient has no active medication to update.
-  {% else %}
-    {{ error }}
-  {% endif %}
-</div>
+<div class="card error">{{ error }}</div>
+{% endif %}
+{% if success %}
+<div class="card success">{{ success }}</div>
 {% endif %}
 
-<h2>Present state</h2>
+<div class="tabs" role="tablist">
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'record' else '' }}" data-tab="record">Record</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'playground' else '' }}" data-tab="playground">Playground</button>
+</div>
+
+<div id="tab-record" class="tab-panel" {% if active_tab != 'record' %}hidden{% endif %}>
+
+<h2 id="present-state">Present state</h2>
 <div class="card">
   <dl>
-    <dt>Journey state</dt><dd><span class="badge">{{ context.journey.state.value }}</span></dd>
-    <dt>State started</dt><dd>{{ context.journey.state_started_at }}</dd>
+    <dt>Journey state</dt><dd><span class="badge {{ context.journey.state.value | badge_class('journey_state') }}">{{ context.journey.state.value | humanize }}</span></dd>
+    <dt>State started</dt><dd>{{ context.journey.state_started_at | local_dt(context.patient.timezone) }}</dd>
     {% if context.active_medication %}
     <dt>Active medication</dt>
     <dd>{{ context.active_medication.name }} — {{ context.active_medication.dose }}{{ context.active_medication.dose_unit }}, {{ context.active_medication.frequency }}</dd>
-    <dt>Next dose</dt><dd>{{ context.active_medication.next_dose_at or "—" }}</dd>
+    <dt>Next dose</dt><dd>{{ context.active_medication.next_dose_at | local_dt(context.patient.timezone) }}</dd>
     {% else %}
     <dt>Active medication</dt><dd class="muted">None</dd>
     {% endif %}
   </dl>
 </div>
 
-<h2>Context playground</h2>
+<h2 id="metric-trends">Metric trends</h2>
+<p class="muted small">
+  Wellness metrics reported across all check-ins. Ordinal metrics (mood, sleep,
+  hydration, protein) plot the backend-derived low/normal/high score, never a
+  patient- or LLM-supplied number — full readings are in
+  <a href="#patient-observations">All patient data</a> below.
+</p>
+<div class="trend-grid">
+  {% for trend in metric_trends %}
+  <div class="card trend-card">
+    <div class="trend-card-header">
+      <h3>{{ trend.metric.value | humanize }}</h3>
+    </div>
+    {% set chart = trend | trend_chart(context.patient.timezone) %}
+    {% if chart %}
+    <svg class="trend-chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ trend.metric.value | humanize }} trend from {{ chart.start_date }} to {{ chart.end_date }}, latest {{ chart.end_label }}">
+      <line class="trend-baseline" x1="0" y1="{{ chart.height - 1 }}" x2="{{ chart.width }}" y2="{{ chart.height - 1 }}" />
+      <path class="trend-line" d="{{ chart.path_d }}" />
+      {% for point in chart.points %}
+      <circle class="trend-hit" cx="{{ point.cx }}" cy="{{ point.cy }}" r="{{ chart.hit_radius }}"><title>{{ point.tooltip }}</title></circle>
+      <circle class="trend-point" cx="{{ point.cx }}" cy="{{ point.cy }}" r="{{ chart.point_radius }}" />
+      {% endfor %}
+      <text class="trend-end-label" x="{{ chart.width - 4 }}" y="{{ chart.end_label_y }}" text-anchor="end">{{ chart.end_label }}</text>
+    </svg>
+    <p class="muted small trend-meta">{{ chart.start_date }}&ndash;{{ chart.end_date }} &middot; range {{ chart.range_label }}</p>
+    {% elif trend.points | length == 1 %}
+    <p class="trend-single">{{ trend.points[0].display_value }} <span class="muted small">({{ trend.points[0].created_at | local_dt(context.patient.timezone) }})</span></p>
+    <p class="muted small">Only one reading so far — not enough for a trend yet.</p>
+    {% else %}
+    <p class="muted">No {{ trend.metric.value | humanize | lower }} data yet.</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h2 id="tracking-items">Tracking items for next call</h2>
+<p class="muted small">
+  What the agent will ask about next, per active clinician instructions and routine
+  metric rotation (voice-agent-kb.md §13) — a wellbeing issue or health concern raised
+  live during the call still takes priority over this list.
+</p>
+{% if context.tracking_items %}
+<div class="card">
+  <ul class="tracking-list">
+    {% for item in context.tracking_items %}
+    <li>
+      <span class="badge {{ item.kind.value | badge_class('tracking_item_kind') }}">{{ item.kind.value | humanize }}</span>
+      <strong>{{ item.label | humanize }}</strong>
+      {% if item.instruction %}<div class="muted small">{{ item.instruction }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% else %}
+<p class="muted">Nothing queued — this will default to a general check-in.</p>
+{% endif %}
+
+<h2 id="last-checkin">Last completed check-in</h2>
+{% if checkin %}
+<div class="card">
+  <dl>
+    <dt>Scheduled</dt><dd>{{ checkin.scheduled_at | local_dt(context.patient.timezone) }}</dd>
+    <dt>Completed</dt><dd>{{ checkin.completed_at | local_dt(context.patient.timezone) }}</dd>
+    <dt>Duration</dt><dd>{{ checkin.duration_seconds }}s</dd>
+  </dl>
+</div>
+
+<h2>Extracted during this call</h2>
+{% if extraction_items %}
+<div class="table-scroll">
+<table>
+  <thead>
+    <tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr>
+  </thead>
+  <tbody>
+    {% for item in extraction_items %}
+    <tr>
+      <td>{{ item.event_type.value | humanize }}</td>
+      <td>
+        {% if item.event_type.value == "symptom" %}
+          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
+          {% if item.trend %} — trend: <span class="badge {{ item.trend | badge_class('symptom_trend') }}">{{ item.trend | humanize }}</span>{% endif %}
+          {% if item.notes %}<br><span class="muted">{{ item.notes }}</span>{% endif %}
+        {% elif item.event_type.value == "medication" %}
+          <span class="badge {{ item.medication_event_type | badge_class('medication_event_type') }}">{{ item.medication_event_type | humanize }}</span>
+          {% if item.reason %} — {{ item.reason }}{% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ item.occurred_at | local_dt(context.patient.timezone) }}</td>
+      <td>{{ item.observed_at | local_dt(context.patient.timezone) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">Nothing was extracted during this call.</p>
+{% endif %}
+{% else %}
+<p class="muted">No completed check-in yet.</p>
+{% endif %}
+
+<h2 id="all-data">All patient data</h2>
+<nav class="toc">
+  <a href="#patient-info">Patient</a>
+  <a href="#journey-history">Journey history</a>
+  <a href="#medication-history">Medication history</a>
+  <a href="#all-checkins">Check-ins</a>
+  <a href="#all-health-events">Health events</a>
+  <a href="#patient-observations">Metric observations</a>
+  <a href="#clinician-instructions">Clinician instructions</a>
+  <a href="#instruction-checkins">Instruction check-ins</a>
+  <a href="#metric-schedules">Metric schedules</a>
+  <a href="#escalation-protocols">Escalation protocols</a>
+</nav>
+
+<h3 id="patient-info">Patient</h3>
+<div class="card">
+  <dl>
+    <dt>Name</dt><dd>{{ full_record.patient.first_name }} {{ full_record.patient.last_name }}</dd>
+    <dt>Date of birth</dt><dd>{{ full_record.patient.date_of_birth }}</dd>
+    <dt>Phone</dt><dd>{{ full_record.patient.phone }}</dd>
+    <dt>Timezone</dt><dd>{{ full_record.patient.timezone }}</dd>
+    <dt>Preferred language</dt><dd>{{ full_record.patient.preferred_language }}</dd>
+  </dl>
+</div>
+
+<h3 id="journey-history">Journey history</h3>
+{% if full_record.journey_history %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>State</th><th>Started</th><th>Ended</th><th>Reason</th></tr></thead>
+  <tbody>
+    {% for h in full_record.journey_history %}
+    <tr>
+      <td><span class="badge {{ h.state.value | badge_class('journey_state') }}">{{ h.state.value | humanize }}</span></td>
+      <td>{{ h.started_at | local_dt(full_record.patient.timezone) }}</td>
+      <td>{{ h.ended_at | local_dt(full_record.patient.timezone) }}</td>
+      <td>{{ h.transition_reason or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No journey history.</p>{% endif %}
+
+<h3 id="medication-history">Medication history</h3>
+{% if full_record.medication_history %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Name</th><th>Dose</th><th>Frequency</th><th>Next dose</th><th>Status</th><th>Started</th><th>Ended</th></tr></thead>
+  <tbody>
+    {% for m in full_record.medication_history %}
+    <tr>
+      <td>{{ m.name }}</td>
+      <td>{{ m.dose }}{{ m.dose_unit }}</td>
+      <td>{{ m.frequency }}</td>
+      <td>{{ m.next_dose_at | local_dt(full_record.patient.timezone) }}</td>
+      <td><span class="badge {{ m.status | badge_class('medication_status') }}">{{ m.status | humanize }}</span></td>
+      <td>{{ m.started_at | local_dt(full_record.patient.timezone) }}</td>
+      <td>{{ m.ended_at | local_dt(full_record.patient.timezone) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No medication history.</p>{% endif %}
+
+<form method="get" class="filter-bar">
+  <input type="hidden" name="tab" value="record">
+  <label>Check-ins &amp; health events from
+    <select name="days" onchange="this.form.submit()">
+      <option value="" {% if not selected_days %}selected{% endif %}>All time</option>
+      <option value="7" {% if selected_days == 7 %}selected{% endif %}>Last 7 days</option>
+      <option value="30" {% if selected_days == 30 %}selected{% endif %}>Last 30 days</option>
+      <option value="90" {% if selected_days == 90 %}selected{% endif %}>Last 90 days</option>
+    </select>
+  </label>
+</form>
+
+<h3 id="all-checkins">All check-ins</h3>
+{% if full_record.checkins %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Scheduled</th><th>Status</th><th>Completed</th><th>Duration</th></tr></thead>
+  <tbody>
+    {% for c in full_record.checkins %}
+    <tr>
+      <td>{{ c.scheduled_at | local_dt(full_record.patient.timezone) }}</td>
+      <td><span class="badge {{ c.status.value | badge_class('checkin_status') }}">{{ c.status.value | humanize }}</span></td>
+      <td>{{ c.completed_at | local_dt(full_record.patient.timezone) }}</td>
+      <td>{{ c.duration_seconds or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No check-ins.</p>{% endif %}
+
+<h3 id="all-health-events">All health events</h3>
+{% if full_record.health_events %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr></thead>
+  <tbody>
+    {% for item in full_record.health_events %}
+    <tr>
+      <td>{{ item.event_type.value | humanize }}</td>
+      <td>
+        {% if item.event_type.value == "symptom" %}
+          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
+          {% if item.trend %} — trend: <span class="badge {{ item.trend | badge_class('symptom_trend') }}">{{ item.trend | humanize }}</span>{% endif %}
+        {% elif item.event_type.value == "medication" %}
+          <span class="badge {{ item.medication_event_type | badge_class('medication_event_type') }}">{{ item.medication_event_type | humanize }}</span>{% if item.reason %} — {{ item.reason }}{% endif %}
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>{{ item.occurred_at | local_dt(full_record.patient.timezone) }}</td>
+      <td>{{ item.observed_at | local_dt(full_record.patient.timezone) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No health events.</p>{% endif %}
+
+<h3 id="patient-observations">Metric observations <span class="muted small">(raw readings behind the trend charts above)</span></h3>
+{% if full_record.observations %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Metric</th><th>Value</th><th>Recorded</th></tr></thead>
+  <tbody>
+    {% for o in full_record.observations %}
+    <tr>
+      <td>{{ o.observation_type.value | humanize }}</td>
+      <td>
+        {% if o.value_numeric is not none %}
+          {{ o.value_numeric }}{{ o.unit }}
+        {% else %}
+          {{ o.value_label.value | humanize }}
+        {% endif %}
+      </td>
+      <td>{{ o.created_at | local_dt(full_record.patient.timezone) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No metric observations.</p>{% endif %}
+
+<h3 id="clinician-instructions">Clinician instructions</h3>
+{% if full_record.clinician_instructions %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Metric</th><th>Frequency</th><th>Instruction</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+  <tbody>
+    {% for i in full_record.clinician_instructions %}
+    <tr>
+      <td>{{ i.metric | humanize }}</td>
+      <td>{{ i.frequency }}</td>
+      <td>{{ i.instruction }}</td>
+      <td>{{ i.start_date }}</td>
+      <td>{{ i.end_date or "—" }}</td>
+      <td><span class="badge {{ i.status | badge_class('instruction_status') }}">{{ i.status | humanize }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No clinician instructions.</p>{% endif %}
+
+<h3 id="instruction-checkins">Instruction check-ins <span class="muted small">(per-checkin outcome of each clinician instruction above)</span></h3>
+{% if full_record.clinician_instruction_checkins %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Metric</th><th>Instruction</th><th>Check-in</th><th>Outcome</th><th>Patient response</th></tr></thead>
+  <tbody>
+    {% for i in full_record.clinician_instruction_checkins %}
+    <tr>
+      <td>{{ i.metric | humanize }}</td>
+      <td>{{ i.instruction }}</td>
+      <td>{{ i.checkin_completed_at | local_dt(full_record.patient.timezone) }}</td>
+      <td><span class="badge {{ i.outcome.value | badge_class('clinician_instruction_outcome') }}">{{ i.outcome.value | humanize }}</span></td>
+      <td>{{ i.patient_response or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No instruction check-ins recorded.</p>{% endif %}
+
+<h3 id="metric-schedules">Metric schedule overrides <span class="muted small">(per-patient cadence; unlisted metrics use the global default)</span></h3>
+{% if full_record.metric_schedule_overrides %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Metric</th><th>Frequency (days)</th><th>Updated</th></tr></thead>
+  <tbody>
+    {% for s in full_record.metric_schedule_overrides %}
+    <tr>
+      <td>{{ s.metric.value | humanize }}</td>
+      <td>{{ s.frequency_days }}</td>
+      <td>{{ s.updated_at | local_dt(full_record.patient.timezone) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No overrides — all metrics use the global default cadence.</p>{% endif %}
+
+<h3 id="escalation-protocols">Escalation protocols <span class="muted small">(global reference, not patient-specific)</span></h3>
+{% if full_record.escalation_protocols %}
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Event type</th><th>Severity</th><th>Action</th><th>Urgency</th></tr></thead>
+  <tbody>
+    {% for p in full_record.escalation_protocols %}
+    <tr>
+      <td>{{ p.event_type | humanize }}</td>
+      <td>{{ (p.severity or "any") | humanize }}</td>
+      <td>{{ p.action | humanize }}</td>
+      <td>{{ p.urgency | humanize }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No escalation protocols configured.</p>{% endif %}
+
+</div>
+
+<div id="tab-playground" class="tab-panel" {% if active_tab != 'playground' %}hidden{% endif %}>
 <p class="muted small">
   Edits here write to the real database through the same domain services the live
   agent uses — start a call afterward to see how the conversation changes.
@@ -43,7 +388,7 @@
     <label>Move to
       <select name="target_state" required>
         {% for state in legal_next_states %}
-        <option value="{{ state.value }}">{{ state.value }}</option>
+        <option value="{{ state.value }}">{{ state.value | humanize }}</option>
         {% endfor %}
       </select>
     </label>
@@ -58,7 +403,7 @@
     <label>Dose <input type="number" step="0.1" name="dose" value="{{ context.active_medication.dose }}" required></label>
     <label>Dose unit <input type="text" name="dose_unit" value="{{ context.active_medication.dose_unit }}" required></label>
     <label>Frequency <input type="text" name="frequency" value="{{ context.active_medication.frequency }}" required></label>
-    <label>Next dose at <input type="datetime-local" name="next_dose_at"></label>
+    <label>Next dose at <input type="datetime-local" name="next_dose_at" value="{{ context.active_medication.next_dose_at | dt_input(context.patient.timezone) }}"></label>
     <button type="submit">Apply</button>
     {% else %}
     <p class="muted small">No active medication to edit.</p>
@@ -67,7 +412,13 @@
 
   <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/clinician-instruction">
     <h3>Clinician tracking instruction</h3>
-    <label>Metric <input type="text" name="metric" placeholder="hydration" required></label>
+    <label>Metric
+      <select name="metric" required>
+        {% for m in metric_types %}
+        <option value="{{ m.value }}">{{ m.value | humanize }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>Frequency <input type="text" name="frequency" placeholder="daily" required></label>
     <label>Instruction <input type="text" name="instruction" placeholder="Track daily fluid intake" required></label>
     <label>Start date <input type="date" name="start_date" required></label>
@@ -75,7 +426,7 @@
     <button type="submit">Add</button>
   </form>
 
-  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/health-event">
+  <form id="health-event-form" class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/health-event">
     <h3>Inject a recent health event</h3>
     <label>Kind
       <select name="kind" required>
@@ -84,24 +435,41 @@
       </select>
     </label>
     <label>Occurred on <input type="date" name="occurred_at" required></label>
-    <label>Symptom type <input type="text" name="symptom_type" placeholder="nausea"></label>
-    <label>Severity <input type="text" name="severity" placeholder="mild"></label>
-    <label>Symptom trend
-      <select name="trend">
-        {% for trend in symptom_trends %}
-        <option value="{{ trend.value }}">{{ trend.value }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Medication event type
-      <select name="medication_event_type">
-        {% for met in medication_event_types %}
-        <option value="{{ met.value }}">{{ met.value }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Reason <input type="text" name="reason" placeholder="optional"></label>
+    <div data-kind="symptom">
+      <label>Symptom type <input type="text" name="symptom_type" placeholder="nausea"></label>
+      <label>Severity <input type="text" name="severity" placeholder="mild"></label>
+      <label>Symptom trend
+        <select name="trend">
+          {% for trend in symptom_trends %}
+          <option value="{{ trend.value }}">{{ trend.value | humanize }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div data-kind="medication">
+      <label>Medication event type
+        <select name="medication_event_type">
+          {% for met in medication_event_types %}
+          <option value="{{ met.value }}">{{ met.value | humanize }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Reason <input type="text" name="reason" placeholder="optional"></label>
+    </div>
     <button type="submit">Record</button>
+  </form>
+
+  <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/metric-schedule">
+    <h3>Metric tracking cadence</h3>
+    <label>Metric
+      <select name="metric" required>
+        {% for m in metric_types %}
+        <option value="{{ m.value }}">{{ m.value | humanize }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Every N days <input type="number" min="1" name="frequency_days" placeholder="e.g. 3" required></label>
+    <button type="submit">Set</button>
   </form>
 
   <form class="card playground-form" method="post" action="/patients/{{ context.patient.id }}/context/missed-checkins">
@@ -110,179 +478,41 @@
     <button type="submit">Add</button>
   </form>
 </div>
-
-<h2>Last completed check-in</h2>
-{% if checkin %}
-<div class="card">
-  <dl>
-    <dt>Scheduled</dt><dd>{{ checkin.scheduled_at }}</dd>
-    <dt>Completed</dt><dd>{{ checkin.completed_at }}</dd>
-    <dt>Duration</dt><dd>{{ checkin.duration_seconds }}s</dd>
-  </dl>
 </div>
 
-<h2>Extracted during this call</h2>
-{% if extraction_items %}
-<table>
-  <thead>
-    <tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr>
-  </thead>
-  <tbody>
-    {% for item in extraction_items %}
-    <tr>
-      <td>{{ item.event_type.value }}</td>
-      <td>
-        {% if item.event_type.value == "symptom" %}
-          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
-          {% if item.trend %} — trend: {{ item.trend }}{% endif %}
-          {% if item.notes %}<br><span class="muted">{{ item.notes }}</span>{% endif %}
-        {% elif item.event_type.value == "medication" %}
-          {{ item.medication_event_type }}
-          {% if item.reason %} — {{ item.reason }}{% endif %}
-        {% else %}
-          <span class="muted">—</span>
-        {% endif %}
-      </td>
-      <td>{{ item.occurred_at }}</td>
-      <td>{{ item.observed_at }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p class="muted">Nothing was extracted during this call.</p>
-{% endif %}
-{% else %}
-<p class="muted">No completed check-in yet.</p>
-{% endif %}
+<script>
+  (function () {
+    const panels = {
+      record: document.getElementById("tab-record"),
+      playground: document.getElementById("tab-playground"),
+    };
+    const buttons = document.querySelectorAll(".tab-btn");
 
-<h2>All patient data</h2>
+    function activate(tab) {
+      buttons.forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+      Object.entries(panels).forEach(([key, el]) => {
+        el.hidden = key !== tab;
+      });
+    }
 
-<h3>Patient</h3>
-<div class="card">
-  <dl>
-    <dt>Name</dt><dd>{{ full_record.patient.first_name }} {{ full_record.patient.last_name }}</dd>
-    <dt>Date of birth</dt><dd>{{ full_record.patient.date_of_birth }}</dd>
-    <dt>Phone</dt><dd>{{ full_record.patient.phone }}</dd>
-    <dt>Timezone</dt><dd>{{ full_record.patient.timezone }}</dd>
-    <dt>Preferred language</dt><dd>{{ full_record.patient.preferred_language }}</dd>
-  </dl>
-</div>
+    document.querySelectorAll("[data-tab]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        if (el.tagName === "A" && el.getAttribute("href") === "#") e.preventDefault();
+        activate(el.dataset.tab);
+      });
+    });
+  })();
 
-<h3>Journey history</h3>
-{% if full_record.journey_history %}
-<table>
-  <thead><tr><th>State</th><th>Started</th><th>Ended</th><th>Reason</th></tr></thead>
-  <tbody>
-    {% for h in full_record.journey_history %}
-    <tr>
-      <td>{{ h.state.value }}</td>
-      <td>{{ h.started_at }}</td>
-      <td>{{ h.ended_at or "—" }}</td>
-      <td>{{ h.transition_reason or "—" }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No journey history.</p>{% endif %}
-
-<h3>Medication history</h3>
-{% if full_record.medication_history %}
-<table>
-  <thead><tr><th>Name</th><th>Dose</th><th>Frequency</th><th>Next dose</th><th>Status</th><th>Started</th><th>Ended</th></tr></thead>
-  <tbody>
-    {% for m in full_record.medication_history %}
-    <tr>
-      <td>{{ m.name }}</td>
-      <td>{{ m.dose }}{{ m.dose_unit }}</td>
-      <td>{{ m.frequency }}</td>
-      <td>{{ m.next_dose_at or "—" }}</td>
-      <td><span class="badge">{{ m.status }}</span></td>
-      <td>{{ m.started_at }}</td>
-      <td>{{ m.ended_at or "—" }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No medication history.</p>{% endif %}
-
-<h3>All check-ins</h3>
-{% if full_record.checkins %}
-<table>
-  <thead><tr><th>Scheduled</th><th>Status</th><th>Completed</th><th>Duration</th></tr></thead>
-  <tbody>
-    {% for c in full_record.checkins %}
-    <tr>
-      <td>{{ c.scheduled_at }}</td>
-      <td><span class="badge">{{ c.status.value }}</span></td>
-      <td>{{ c.completed_at or "—" }}</td>
-      <td>{{ c.duration_seconds or "—" }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No check-ins.</p>{% endif %}
-
-<h3>All health events</h3>
-{% if full_record.health_events %}
-<table>
-  <thead><tr><th>Type</th><th>Detail</th><th>Occurred</th><th>Observed</th></tr></thead>
-  <tbody>
-    {% for item in full_record.health_events %}
-    <tr>
-      <td>{{ item.event_type.value }}</td>
-      <td>
-        {% if item.event_type.value == "symptom" %}
-          {{ item.symptom_type }}{% if item.severity %} ({{ item.severity }}){% endif %}
-          {% if item.trend %} — trend: {{ item.trend }}{% endif %}
-        {% elif item.event_type.value == "medication" %}
-          {{ item.medication_event_type }}{% if item.reason %} — {{ item.reason }}{% endif %}
-        {% else %}
-          <span class="muted">—</span>
-        {% endif %}
-      </td>
-      <td>{{ item.occurred_at }}</td>
-      <td>{{ item.observed_at }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No health events.</p>{% endif %}
-
-<h3>Clinician instructions</h3>
-{% if full_record.clinician_instructions %}
-<table>
-  <thead><tr><th>Metric</th><th>Frequency</th><th>Instruction</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
-  <tbody>
-    {% for i in full_record.clinician_instructions %}
-    <tr>
-      <td>{{ i.metric }}</td>
-      <td>{{ i.frequency }}</td>
-      <td>{{ i.instruction }}</td>
-      <td>{{ i.start_date }}</td>
-      <td>{{ i.end_date or "—" }}</td>
-      <td><span class="badge">{{ i.status }}</span></td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No clinician instructions.</p>{% endif %}
-
-<h3>Escalation protocols <span class="muted small">(global reference, not patient-specific)</span></h3>
-{% if full_record.escalation_protocols %}
-<table>
-  <thead><tr><th>Event type</th><th>Severity</th><th>Action</th><th>Urgency</th></tr></thead>
-  <tbody>
-    {% for p in full_record.escalation_protocols %}
-    <tr>
-      <td>{{ p.event_type }}</td>
-      <td>{{ p.severity or "any" }}</td>
-      <td>{{ p.action }}</td>
-      <td>{{ p.urgency }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}<p class="muted">No escalation protocols configured.</p>{% endif %}
-
+  (function () {
+    const form = document.getElementById("health-event-form");
+    const kindSelect = form.querySelector('[name="kind"]');
+    function sync() {
+      form.querySelectorAll("[data-kind]").forEach((el) => {
+        el.hidden = el.dataset.kind !== kindSelect.value;
+      });
+    }
+    kindSelect.addEventListener("change", sync);
+    sync();
+  })();
+</script>
 {% endblock %}

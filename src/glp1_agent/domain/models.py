@@ -52,6 +52,22 @@ class MedicationEventType(StrEnum):
     REFILL_ISSUE = "REFILL_ISSUE"
 
 
+class MetricType(StrEnum):
+    MOOD = "MOOD"
+    WEIGHT = "WEIGHT"
+    SLEEP = "SLEEP"
+    HYDRATION = "HYDRATION"
+    PROTEIN = "PROTEIN"
+
+
+class ObservationValueLabel(StrEnum):
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    ADEQUATE = "ADEQUATE"
+    NOT_REPORTED = "NOT_REPORTED"
+
+
 class Patient(BaseModel):
     id: UUID
     first_name: str
@@ -134,6 +150,34 @@ class ExtractionItem(BaseModel):
     notes: str | None
 
 
+class CheckinObservation(BaseModel):
+    id: UUID
+    patient_id: UUID
+    checkin_id: UUID | None
+    observation_type: MetricType
+    value_label: ObservationValueLabel | None
+    value_numeric: float | None
+    unit: str | None
+    confidence: float | None
+    created_at: datetime
+
+
+class MetricTrendPoint(BaseModel):
+    """One plottable observation — value already resolved to a comparable number
+    (backend-derived, never the LLM), plus a human-readable label for display."""
+
+    created_at: datetime
+    value: float
+    display_value: str
+
+
+class MetricTrend(BaseModel):
+    """Chronological (oldest -> newest) series for one metric, for dashboard trend charts."""
+
+    metric: MetricType
+    points: list[MetricTrendPoint]
+
+
 class ClinicianInstruction(BaseModel):
     tracking_id: UUID
     metric: str
@@ -142,6 +186,51 @@ class ClinicianInstruction(BaseModel):
     start_date: date
     end_date: date | None
     status: str = "active"
+
+
+class TrackingItemKind(StrEnum):
+    CLINICIAN_INSTRUCTION = "clinician_instruction"
+    DUE_METRIC = "due_metric"
+
+
+class TrackingItem(BaseModel):
+    """A single ranked entry in the unified 'things to track today' list handed to the
+    voice agent — clinician-directed tracking outranks routine metric rotation
+    (voice-agent-kb.md §13)."""
+
+    kind: TrackingItemKind
+    label: str
+    instruction: str | None = None
+    metric: MetricType | None = None
+    tracking_id: UUID | None = None
+    """clinician_instructions.id — set only for CLINICIAN_INSTRUCTION items, so tools can
+    reference which instruction to acknowledge/skip."""
+
+
+class ClinicianInstructionOutcome(StrEnum):
+    ACKNOWLEDGED = "acknowledged"
+    DECLINED = "declined"
+
+
+class ClinicianInstructionCheckin(BaseModel):
+    id: UUID
+    clinician_instruction_id: UUID
+    checkin_id: UUID
+    outcome: ClinicianInstructionOutcome
+    patient_response: str | None
+    created_at: datetime
+
+
+class ClinicianInstructionCheckinRecord(BaseModel):
+    """A ClinicianInstructionCheckin joined with its instruction and checkin, for dashboard display."""
+
+    id: UUID
+    metric: str
+    instruction: str
+    checkin_completed_at: datetime | None
+    outcome: ClinicianInstructionOutcome
+    patient_response: str | None
+    created_at: datetime
 
 
 class EscalationProtocol(BaseModel):
@@ -188,7 +277,38 @@ class PatientContext(BaseModel):
     active_medication: Medication | None
     recent_checkins: list[Checkin]
     recent_health_events: list[ExtractionItem]
-    active_clinician_instructions: list[ClinicianInstruction]
+    tracking_items: list[TrackingItem]
+
+
+class TodayObservation(BaseModel):
+    """Dashboard-only view: a checkin_observations row joined with the patient's name,
+    for the 'what's been captured today' board."""
+
+    patient_id: UUID
+    patient_name: str
+    observation_type: MetricType
+    value_label: ObservationValueLabel | None
+    value_numeric: float | None
+    unit: str | None
+    created_at: datetime
+
+
+class PatientSummary(BaseModel):
+    """Dashboard-only view: a patient row plus at-a-glance risk signals for the list page."""
+
+    patient: Patient
+    journey_state: JourneyState | None
+    last_completed_checkin_at: datetime | None
+    missed_checkin_count: int
+
+
+class PatientMetricSchedule(BaseModel):
+    """Per-patient override of a metric_schedules default frequency."""
+
+    patient_id: UUID
+    metric: MetricType
+    frequency_days: int
+    updated_at: datetime
 
 
 class PatientFullRecord(BaseModel):
@@ -200,4 +320,7 @@ class PatientFullRecord(BaseModel):
     checkins: list[Checkin]
     health_events: list[ExtractionItem]
     clinician_instructions: list[ClinicianInstruction]
+    clinician_instruction_checkins: list[ClinicianInstructionCheckinRecord]
     escalation_protocols: list[EscalationProtocolRow]
+    metric_schedule_overrides: list[PatientMetricSchedule]
+    observations: list[CheckinObservation]

@@ -71,11 +71,22 @@ class HealthEventRepo:
         )
         return [_to_extraction_item(r) for r in rows]
 
-    async def all_extraction(self, patient_id: UUID) -> list[ExtractionItem]:
-        rows = await self._pool.fetch(
-            _EXTRACTION_SELECT + " WHERE he.patient_id = $1 ORDER BY he.occurred_at DESC",
-            patient_id,
-        )
+    async def all_extraction(
+        self, patient_id: UUID, days: int | None = None, now: datetime | None = None
+    ) -> list[ExtractionItem]:
+        if days is None:
+            rows = await self._pool.fetch(
+                _EXTRACTION_SELECT + " WHERE he.patient_id = $1 ORDER BY he.occurred_at DESC",
+                patient_id,
+            )
+        else:
+            since = (now or datetime.now(UTC)) - timedelta(days=days)
+            rows = await self._pool.fetch(
+                _EXTRACTION_SELECT
+                + " WHERE he.patient_id = $1 AND he.occurred_at >= $2 ORDER BY he.occurred_at DESC",
+                patient_id,
+                since,
+            )
         return [_to_extraction_item(r) for r in rows]
 
     async def recent(

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncpg
@@ -71,16 +71,31 @@ class CheckinRepo:
         )
         return _to_checkin(row) if row is not None else None
 
-    async def all(self, patient_id: UUID) -> list[Checkin]:
-        rows = await self._pool.fetch(
-            """
-            SELECT id, patient_id, scheduled_at, started_at, completed_at, status, duration_seconds
-            FROM checkins
-            WHERE patient_id = $1
-            ORDER BY scheduled_at DESC
-            """,
-            patient_id,
-        )
+    async def all(
+        self, patient_id: UUID, days: int | None = None, now: datetime | None = None
+    ) -> list[Checkin]:
+        if days is None:
+            rows = await self._pool.fetch(
+                """
+                SELECT id, patient_id, scheduled_at, started_at, completed_at, status, duration_seconds
+                FROM checkins
+                WHERE patient_id = $1
+                ORDER BY scheduled_at DESC
+                """,
+                patient_id,
+            )
+        else:
+            since = (now or datetime.now(UTC)) - timedelta(days=days)
+            rows = await self._pool.fetch(
+                """
+                SELECT id, patient_id, scheduled_at, started_at, completed_at, status, duration_seconds
+                FROM checkins
+                WHERE patient_id = $1 AND scheduled_at >= $2
+                ORDER BY scheduled_at DESC
+                """,
+                patient_id,
+                since,
+            )
         return [_to_checkin(r) for r in rows]
 
     async def seed_missed(self, patient_id: UUID, count: int, now: datetime) -> list[Checkin]:

@@ -2,14 +2,24 @@ from collections.abc import Callable
 
 from pipecat.flows import NodeConfig
 
-from glp1_agent.domain.models import CheckinStatus, HealthEventType, PatientContext
+from glp1_agent.domain.models import (
+    CheckinStatus,
+    HealthEventType,
+    MetricType,
+    PatientContext,
+    TrackingItem,
+    TrackingItemKind,
+)
 from glp1_agent.flows import selection
 from glp1_agent.tools.functions import (
+    acknowledge_clinician_instruction,
     complete_checkin,
     get_clinical_escalation_protocol,
     record_health_event,
     record_medication_event,
+    record_observation,
     record_symptom_event,
+    skip_tracking_item,
 )
 
 _ROLE_MESSAGE = (
@@ -33,7 +43,16 @@ _EXTRACTION_INSTRUCTIONS = (
     "patient actually said — never infer or invent details they didn't mention."
 )
 
-_COMMON_FUNCTIONS = [record_health_event, record_symptom_event, get_clinical_escalation_protocol]
+_COMMON_FUNCTIONS = [
+    record_health_event,
+    record_symptom_event,
+    get_clinical_escalation_protocol,
+    record_observation,
+    acknowledge_clinician_instruction,
+    skip_tracking_item,
+]
+
+_METRICS_NEEDING_FOLLOWUP = {MetricType.MOOD, MetricType.SLEEP, MetricType.HYDRATION}
 
 
 def _format_recent_events(context: PatientContext) -> str:
@@ -54,6 +73,45 @@ def _format_recent_events(context: PatientContext) -> str:
     return "\n".join(lines)
 
 
+def _format_tracking_items(context: PatientContext) -> str:
+    if not context.tracking_items:
+        return "  None."
+    lines = []
+    for item in context.tracking_items:
+        if item.kind == TrackingItemKind.CLINICIAN_INSTRUCTION:
+            lines.append(
+                f"  - Clinician-requested — {item.label}: {item.instruction} "
+                "Ask about it directly, in your own words. Once the patient responds, call "
+                f"acknowledge_clinician_instruction (tracking_id={item.tracking_id}) with what "
+                "they said, or skip_tracking_item if they decline."
+            )
+        elif item.metric in _METRICS_NEEDING_FOLLOWUP:
+            lines.append(
+                f"  - Metric check due — {item.metric.value}: ask about it naturally at some "
+                "point in the conversation, without turning this into a rigid questionnaire. "
+                "If the patient's answer sounds concerning (e.g. LOW), ask ONE brief "
+                "follow-up question before moving on — not several stacked questions — "
+                "picking whichever is most natural: how long this has been going on, "
+                "whether it's new, or whether it seems related to their medication or last "
+                "dose (check the recent medication events already listed elsewhere in this "
+                "context for real dates — never invent a date or dose). Call "
+                "record_observation once the patient answers the original question. If the "
+                "follow-up reveals this is new or ongoing (not a one-off), also call "
+                "record_health_event (event_type='symptom') and record_symptom_event with "
+                "what they said, per the extraction rules below, so it's tracked as a "
+                "symptom. If they decline the metric question entirely, call "
+                "skip_tracking_item."
+            )
+        else:
+            lines.append(
+                f"  - Metric check due — {item.metric.value}: ask about it naturally at some "
+                "point in the conversation, without turning this into a rigid questionnaire. "
+                "Call record_observation once the patient answers, or skip_tracking_item if "
+                "they decline."
+            )
+    return "\n".join(lines)
+
+
 def _context_message(context: PatientContext) -> dict:
     medication = context.active_medication
     medication_line = (
@@ -61,14 +119,6 @@ def _context_message(context: PatientContext) -> dict:
         + (f", next dose at {medication.next_dose_at}" if medication.next_dose_at else "")
         if medication
         else "No active medication on file."
-    )
-
-    instructions_line = (
-        "; ".join(
-            f"{i.metric}: {i.instruction}" for i in context.active_clinician_instructions
-        )
-        if context.active_clinician_instructions
-        else "None."
     )
 
     missed = sum(1 for c in context.recent_checkins if c.status == CheckinStatus.MISSED)
@@ -81,7 +131,7 @@ def _context_message(context: PatientContext) -> dict:
         f"(since {context.journey.state_started_at.date()})\n"
         f"- Active medication: {medication_line}\n"
         f"- Missed check-ins in the last {len(context.recent_checkins)}: {missed}\n"
-        f"- Active clinician tracking: {instructions_line}\n"
+        f"- Things to track today:\n{_format_tracking_items(context)}\n"
         f"- Recent symptoms/medication events (last 7 days):\n{_format_recent_events(context)}"
     )
     return {"role": "developer", "content": content}
@@ -178,6 +228,46 @@ def create_clinician_tracking_node(context: PatientContext) -> NodeConfig:
             },
         ],
         functions=[*_COMMON_FUNCTIONS, complete_checkin],
+    )
+
+
+def create_tracking_checklist_node(pending_items: list[TrackingItem]) -> NodeConfig:
+    """Remediation node — reached only via complete_checkin's returned tuple when tracking
+    items remain unresolved (see tools/functions.py). Lists only the items still pending, not
+    the whole context, since the rest of the conversation already happened and is still in
+    the LLM's context — this is a real Pipecat transition (not a bare 'stay on node' return)
+    because pipecat.flows has no partial task_messages update; a fresh node is required to
+    re-inject updated instructions."""
+    lines = []
+    for item in pending_items:
+        if item.kind == TrackingItemKind.CLINICIAN_INSTRUCTION:
+            lines.append(
+                f"  - {item.label} (tracking_id={item.tracking_id}): {item.instruction} Ask "
+                "now if you haven't already, then call acknowledge_clinician_instruction or "
+                "skip_tracking_item."
+            )
+        else:
+            lines.append(
+                f"  - {item.metric.value}: ask now if you haven't already, then call "
+                "record_observation or skip_tracking_item."
+            )
+    return NodeConfig(
+        name="tracking_checklist",
+        role_message=_ROLE_MESSAGE,
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Before ending the call, these specific items still need a recorded "
+                    "outcome (they may already have come up loosely — actually record the "
+                    "outcome now):\n"
+                    + "\n".join(lines)
+                    + "\nDo not re-ask about anything not listed above. Once every item above "
+                    "has a recorded outcome, call complete_checkin again."
+                ),
+            }
+        ],
+        functions=[*_COMMON_FUNCTIONS, record_medication_event, complete_checkin],
     )
 
 

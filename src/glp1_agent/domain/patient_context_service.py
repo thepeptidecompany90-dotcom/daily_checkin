@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from glp1_agent.db.repositories.checkin_repo import CheckinRepo
@@ -5,8 +6,16 @@ from glp1_agent.db.repositories.clinician_instruction_repo import ClinicianInstr
 from glp1_agent.db.repositories.health_event_repo import HealthEventRepo
 from glp1_agent.db.repositories.journey_repo import JourneyRepo
 from glp1_agent.db.repositories.medication_repo import MedicationRepo
+from glp1_agent.db.repositories.metric_schedule_repo import MetricScheduleRepo
+from glp1_agent.db.repositories.observation_repo import ObservationRepo
+from glp1_agent.db.repositories.patient_metric_schedule_repo import PatientMetricScheduleRepo
 from glp1_agent.db.repositories.patient_repo import PatientRepo
 from glp1_agent.domain.models import PatientContext
+from glp1_agent.domain.observation_service import (
+    build_tracking_items,
+    resolve_metric_frequencies,
+    select_due_metric,
+)
 
 _RECENT_CHECKIN_LIMIT = 7
 _RECENT_HEALTH_EVENT_DAYS = 7
@@ -23,6 +32,9 @@ class PatientContextService:
         checkin_repo: CheckinRepo,
         health_event_repo: HealthEventRepo,
         clinician_instruction_repo: ClinicianInstructionRepo,
+        observation_repo: ObservationRepo,
+        metric_schedule_repo: MetricScheduleRepo,
+        patient_metric_schedule_repo: PatientMetricScheduleRepo,
     ):
         self._patients = patient_repo
         self._journeys = journey_repo
@@ -30,8 +42,14 @@ class PatientContextService:
         self._checkins = checkin_repo
         self._health_events = health_event_repo
         self._instructions = clinician_instruction_repo
+        self._observations = observation_repo
+        self._metric_schedules = metric_schedule_repo
+        self._patient_metric_schedules = patient_metric_schedule_repo
 
-    async def get_patient_context(self, patient_id: UUID) -> PatientContext:
+    async def get_patient_context(
+        self, patient_id: UUID, now: datetime | None = None
+    ) -> PatientContext:
+        now = now or datetime.now(UTC)
         patient = await self._patients.get(patient_id)
         journey = await self._journeys.get_current(patient_id)
         active_medication = await self._medications.get_active(patient_id)
@@ -40,11 +58,17 @@ class PatientContextService:
             patient_id, _RECENT_HEALTH_EVENT_DAYS
         )
         active_clinician_instructions = await self._instructions.active(patient_id)
+        last_observed = await self._observations.last_observed_at_by_metric(patient_id)
+        default_frequencies = await self._metric_schedules.all()
+        overrides = await self._patient_metric_schedules.for_patient(patient_id)
+        override_map = {o.metric: o.frequency_days for o in overrides}
+        frequencies = resolve_metric_frequencies(default_frequencies, override_map)
+        due_metric = select_due_metric(now, last_observed, frequencies)
         return PatientContext(
             patient=patient,
             journey=journey,
             active_medication=active_medication,
             recent_checkins=recent_checkins,
             recent_health_events=recent_health_events,
-            active_clinician_instructions=active_clinician_instructions,
+            tracking_items=build_tracking_items(active_clinician_instructions, due_metric),
         )
